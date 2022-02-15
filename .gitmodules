@@ -1,0 +1,3 @@
+[submodule "moldyn"]
+	path = moldyn
+	url = https://github.com/ArvinSKushwaha/moldyn
