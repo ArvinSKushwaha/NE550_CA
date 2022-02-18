@@ -1,3 +1,4 @@
+#include <limits>
 #include <vector>
 #include <cmath>
 #include <iostream>
@@ -6,6 +7,8 @@
 #include <iomanip>
 
 using size_t = std::size_t;
+
+static size_t accumulationSize; // The maximum number of iterations to accumulate the average and variance.
 
 
 struct Vec2 {
@@ -54,7 +57,10 @@ std::ostream& operator<<(std::ostream& os, const Vec2& v);
 
 struct Macrostates {
     double kinetic, potential;
-    double pressure, temperature;
+    std::vector<double> pressure, temperature;
+    struct {
+        double mean, variance;
+    } pressure_acc, temperature_acc;
 };
 
 class SoftSphereSimulation {
@@ -63,7 +69,6 @@ class SoftSphereSimulation {
         double mass, sigma, epsilon, rc2, dt, velMag;
         Vec2 boxSize;
         Macrostates macrostate;
-        double furthestDistance;
         Vec2 totalForce, totalMomentum, centerOfMass, centerOfMassVelocity;
         std::vector<Vec2> pos;
         std::vector<Vec2> vel;
@@ -203,13 +208,11 @@ void SoftSphereSimulation::calculate_force() {
 void SoftSphereSimulation::update() {
     calculate_force();
     centerOfMass.x = centerOfMass.y = 0;
-    furthestDistance = 0;
     // Kick-Drift-Kick scheme (Leapfrog)
     for (size_t i = 0; i < pos.size(); ++i) {
         vel[i] += force[i] * dt / (2. * mass);
         pos[i] += vel[i] * dt;
         centerOfMass += mass * pos[i];
-        furthestDistance = std::max(furthestDistance, pos[i].norm2());
     }
 
     centerOfMass /= mass * pos.size();
@@ -237,25 +240,51 @@ void SoftSphereSimulation::update() {
         posForceDotProduct += force[i].dot(pos[i]);
     }
 
-    macrostate.temperature = 2. * avg_kinetic / (2. * boltzmann);
-    macrostate.pressure = (macrostate.temperature * pos.size() + posForceDotProduct / 2.) / (boxSize.x * boxSize.y);
-    furthestDistance = std::sqrt(furthestDistance);
+    double temperature = 2. * avg_kinetic / (2. * boltzmann);
+    double pressure = (temperature * pos.size() + posForceDotProduct / 2.) / (boxSize.x * boxSize.y);
+
+    macrostate.temperature.push_back(temperature);
+    macrostate.pressure.push_back(pressure);
+
+    macrostate.temperature_acc.mean = macrostate.temperature_acc.variance = 0;
+    macrostate.pressure_acc.mean = macrostate.pressure_acc.variance = 0;
+
+    for (size_t i = macrostate.temperature.size() - 1, n = 0; i > 0 && n < accumulationSize; i--, n++) {
+        macrostate.temperature_acc.mean += macrostate.temperature[i];
+        macrostate.pressure_acc.mean += macrostate.pressure[i];
+    }
+
+    for (size_t i = macrostate.temperature.size() - 1, n = 0; i > 0 && n < accumulationSize; i--, n++) {
+        macrostate.temperature_acc.variance += macrostate.temperature[i] * macrostate.temperature[i];
+        macrostate.pressure_acc.variance += macrostate.pressure[i] * macrostate.pressure[i];
+    }
+    macrostate.temperature_acc.mean /= std::min(accumulationSize, macrostate.temperature.size());
+    macrostate.pressure_acc.mean /= std::min(accumulationSize, macrostate.pressure.size());
+
+    macrostate.temperature_acc.variance /= std::min(accumulationSize, macrostate.temperature.size());
+    macrostate.pressure_acc.variance /= std::min(accumulationSize, macrostate.pressure.size());
+
+    macrostate.temperature_acc.variance -= macrostate.temperature_acc.mean * macrostate.temperature_acc.mean;
+    macrostate.pressure_acc.variance -= macrostate.pressure_acc.mean * macrostate.pressure_acc.mean;
+
+    macrostate.temperature_acc.variance = std::max(macrostate.temperature_acc.variance, 0.);
+    macrostate.pressure_acc.variance = std::max(macrostate.pressure_acc.variance, 0.);
 
     time += dt / 2.0;
 }
 
 std::ostream& operator<<(std::ostream& out, const SoftSphereSimulation& sim) {
-    // Time | Total Energy | Total Kinetic Energy | Total Potential Energy | Pressure | Temperature | COM (v) | COM Velocity (v) | Total Force (v) | Total Momentum (v)
+    // Time (ps) | Total Energy (eV) | Total Kinetic Energy (eV) | Total Potential Energy (eV) | Pressure (Pa) | Pressure StdDev (Pa) | Temperature (K) | Temperature StdDev (K) | Total Momentum (A/ps)
+    out.precision(std::numeric_limits<double>::max_digits10);
     out << sim.time << "\t" 
-        << (sim.macrostate.kinetic + sim.macrostate.potential) << "\t"
-        << sim.macrostate.kinetic << "\t"
-        << sim.macrostate.potential << "\t"
-        << sim.macrostate.pressure * 1.6605e+7 << "\t"
-        << sim.macrostate.temperature << "\t"
-        << sim.centerOfMass << "\t"
-        << sim.centerOfMassVelocity << "\t"
-        << sim.totalForce << "\t"
-        << sim.totalMomentum << "\n";
+        << (sim.macrostate.kinetic + sim.macrostate.potential) * 1.0364e-4 << "\t"
+        << sim.macrostate.kinetic * 1.0364e-4 << "\t"
+        << sim.macrostate.potential * 1.0364e-4 << "\t"
+        << sim.macrostate.pressure_acc.mean * 1.6605e+7 << "\t"
+        << std::sqrt(sim.macrostate.pressure_acc.variance) * 1.6605e+7 << "\t"
+        << sim.macrostate.temperature_acc.mean << "\t"
+        << std::sqrt(sim.macrostate.temperature_acc.variance) << "\t"
+        << sim.totalMomentum.norm() << "\n";
     return out;
 }
 
@@ -310,6 +339,8 @@ int main(int argc, char *argv[]) {
     std::cin >> mass;
     std::cout << "Enter tMax (ps): ";
     std::cin >> tMax;
+    std::cout << "Enter accumulation step count: ";
+    std::cin >> accumulationSize;
 
     Vec2 boxSize = {
         n_x / std::sqrt(density),
@@ -321,7 +352,7 @@ int main(int argc, char *argv[]) {
     SoftSphereSimulation sim(mass, sigma, epsilon, boxSize, dt, velMag);
     sim.initialize_particles_grid(n_x, n_y);
 
-    out << "Time\tTotal Energy\tTotal Kinetic Energy\tTotal Potential Energy\tPressure\tTemperature\tCOM (v)\tCOM Velocity (v)\tTotal Force (v)\tTotal Momentum (v)\n";
+    out << "Time (ps)\tTotal Energy (eV)\tTotal Kinetic Energy (eV)\tTotal Potential Energy (eV)\tPressure (Pa)\tPressure StdDev (Pa)\tTemperature (K)\tTemperature StdDev (K)\tTotal Momentum (A/ps)\n";
     while (sim.time < tMax) {
         for (int i = 0; i < 100 && sim.time < tMax; i++) {
             sim.update();
@@ -330,30 +361,21 @@ int main(int argc, char *argv[]) {
         printf(
             "Timestep %f:\n"
             "\tTotal Energy: %e eV (Kinetic: %e eV, Potential: %e eV)\n"
-            "\tTotal Momentum: [ %e, %e ] amu A / ps\n"
-            "\tTotal Force: [ %e, %e ] amu A / ps^2\n"
-            "\tCenter of Mass: [ %e, %e ] A\n"
-            "\tCenter of Mass Velocity: [ %e, %e ] A / ps\n"
-            "\tPressure: %e Pa\n"
-            "\tTemperature: %e K\n"
-            "\tFurthest Particle: %e A\n",
+            "\tTotal Momentum: %e amu A / ps\n"
+            "\tCenter of Mass Velocity: %e A / ps\n"
+            "\tPressure: %e ± %e Pa\n"
+            "\tTemperature: %e ± %e K\n",
             sim.time,
             (sim.macrostate.kinetic + sim.macrostate.potential) * 1.0364e-4,
             sim.macrostate.kinetic * 1.0364e-4,
             sim.macrostate.potential * 1.0364e-4,
-            sim.totalMomentum.x,
-            sim.totalMomentum.y,
-            sim.totalForce.x,
-            sim.totalForce.y,
-            sim.centerOfMass.x,
-            sim.centerOfMass.y,
-            sim.centerOfMassVelocity.x,
-            sim.centerOfMassVelocity.y,
-            sim.macrostate.pressure * 1.6605e+7,
-            sim.macrostate.temperature,
-            sim.furthestDistance
+            sim.totalMomentum.norm(),
+            sim.centerOfMassVelocity.norm(),
+            sim.macrostate.pressure_acc.mean * 1.6605e+7,
+            std::sqrt(sim.macrostate.pressure_acc.variance) * 1.6605e+7,
+            sim.macrostate.temperature_acc.mean,
+            std::sqrt(sim.macrostate.temperature_acc.variance)
         );
     }
     out << std::endl;
 }
-
