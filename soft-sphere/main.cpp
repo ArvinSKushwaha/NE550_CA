@@ -179,9 +179,13 @@ void SoftSphereSimulation::calculate_force() {
     macrostate.potential = 0;
     totalForce.x = totalForce.y = 0;
 
+    double sigma2 = sigma * sigma;
+
+#pragma omp parallel for
     for (size_t i = 0; i < force.size(); i++)
         force[i].x = force[i].y = 0;
 
+#pragma omp parallel for collapse(2)
     for (size_t i = 0; i < force.size(); ++i) {
         for (size_t j = 0; j < i; ++j) {
             Vec2 rij = pos[i] - pos[j];
@@ -192,42 +196,56 @@ void SoftSphereSimulation::calculate_force() {
             double dist2 = (pos[i] - pos[j]).norm2();
             if (dist2 > rc2) continue;
 
-            double sigma2 = sigma * sigma;
             Vec2 temp_force = (pos[i] - pos[j]) * 48 * epsilon / sigma2 * (powf(sigma2 / dist2, 7) - 0.5 * powf(sigma2 / dist2, 4));
             force[i] += temp_force; // add to i
             force[j] -= temp_force; // subtract from j
-
-            macrostate.potential += 4 * epsilon * (powf(sigma2 / dist2, 6) - powf(sigma2 / dist2, 3)) + epsilon;
         }
     }
 
-    for (size_t i = 0; i < force.size(); ++i)
+    for (size_t i = 0; i < force.size(); i++) {
+        for (size_t j = 0; j < i; j++) {
+            double dist2 = (pos[i] - pos[j]).norm2();
+            if (dist2 > rc2) continue;
+            macrostate.potential += 4 * epsilon * (powf(sigma2 / dist2, 6) - powf(sigma2 / dist2, 3)) + epsilon;
+        }
         totalForce += force[i];
+    }
 }
 
 void SoftSphereSimulation::update() {
     calculate_force();
     centerOfMass.x = centerOfMass.y = 0;
     // Kick-Drift-Kick scheme (Leapfrog)
+#pragma omp parallel for
     for (size_t i = 0; i < pos.size(); ++i) {
         vel[i] += force[i] * dt / (2. * mass);
         pos[i] += vel[i] * dt;
-        centerOfMass += mass * pos[i];
     }
 
+    for (size_t i = 0; i < pos.size(); ++i) {
+        centerOfMass += pos[i] * mass;
+    }
     centerOfMass /= mass * pos.size();
+
     time += dt / 2.0;
     calculate_force();
 
-    macrostate.kinetic = 0;
-    totalMomentum.x = totalMomentum.y = 0;
+#pragma omp parallel for
     for (size_t i = 0; i < pos.size(); ++i) {
         vel[i] += force[i] * dt / (2. * mass);
-        macrostate.kinetic += vel[i].norm2() * mass / 2.0;
-        totalMomentum += vel[i] * mass;
     }
-    centerOfMassVelocity = totalMomentum / (mass * pos.size());
 
+
+    macrostate.kinetic = 0;
+    totalMomentum.x = totalMomentum.y = 0;
+
+    for (size_t i = 0; i < pos.size(); ++i) {
+        totalMomentum += vel[i] * mass;
+        macrostate.kinetic += 0.5 * mass * (vel[i].norm2());
+    }
+    centerOfMassVelocity = totalMomentum / (mass * pos.size()); // TODO
+
+#pragma omp parallel for
     for (size_t i = 0; i < pos.size(); ++i) {
         vel[i] -= centerOfMassVelocity;
         pos[i] -= centerOfMass;
