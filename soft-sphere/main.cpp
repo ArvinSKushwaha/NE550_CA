@@ -69,7 +69,7 @@ class SoftSphereSimulation {
         double mass, sigma, epsilon, rc2, dt, velMag;
         Vec2 boxSize;
         Macrostates macrostate;
-        Vec2 totalForce, totalMomentum, centerOfMass, centerOfMassVelocity;
+        Vec2 totalMomentum, centerOfMass, centerOfMassVelocity;
         std::vector<Vec2> pos;
         std::vector<Vec2> vel;
         std::vector<Vec2> force;
@@ -176,9 +176,7 @@ void SoftSphereSimulation::initialize_particles_grid(size_t n_x, size_t n_y) {
 }
 
 void SoftSphereSimulation::calculate_force() {
-    macrostate.potential = 0;
-    totalForce.x = totalForce.y = 0;
-
+    double potential = 0;
     double sigma2 = sigma * sigma;
 
 #pragma omp parallel for
@@ -202,14 +200,15 @@ void SoftSphereSimulation::calculate_force() {
         }
     }
 
+#pragma omp parallel for collapse(2) reduction(+:potential)
     for (size_t i = 0; i < force.size(); i++) {
         for (size_t j = 0; j < i; j++) {
             double dist2 = (pos[i] - pos[j]).norm2();
             if (dist2 > rc2) continue;
-            macrostate.potential += 4 * epsilon * (powf(sigma2 / dist2, 6) - powf(sigma2 / dist2, 3)) + epsilon;
+            potential += 4 * epsilon * (powf(sigma2 / dist2, 6) - powf(sigma2 / dist2, 3)) + epsilon;
         }
-        totalForce += force[i];
     }
+    macrostate.potential = potential;
 }
 
 void SoftSphereSimulation::update() {
