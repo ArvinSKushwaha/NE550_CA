@@ -363,10 +363,12 @@ void SoftSphereSimulation::update() {
 }
 
 void SoftSphereSimulation::outputParticlePositions(std::ostream &os) const {
-    os << "Time: " << time << "\n";
-    for (auto const &i : pos) {
-        os << i.x << '\t' << i.y << '\n';
+    os << time << ",";
+    for (size_t i = 0; i < nParticles; ++i) {
+        os << pos[i].x << "," << pos[i].y;
+        if (i != nParticles - 1) os << ",";
     }
+    os << "\n";
 }
 
 std::ostream &operator<<(std::ostream &out, const SoftSphereSimulation &sim) {
